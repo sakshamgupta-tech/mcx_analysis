@@ -3,8 +3,8 @@ import io
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Fastest Completed Leg per Portfolio", layout="wide")
-st.title("Fastest Completed Leg per Portfolio — Legs Sheet")
+st.set_page_config(page_title="mcx_analysis", layout="wide")
+st.title("mcx_analysis")
 
 uploaded_file = st.file_uploader("Upload the Excel file", type=["xlsx", "xls"])
 
