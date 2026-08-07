@@ -469,6 +469,16 @@ else:
                     mime="text/csv",
                 )
 
+    # ---- Rename to the display column names for the final report / export ----
+    combined = combined.rename(
+        columns={
+            "End User ID": "FIRST SQR OFF User ID",
+            "End Time": "Sqr off Time",
+            "End User Exit Type": "SQR OFF User Exit Type",
+            "Max Portfolio User ID": "PNL wise User ID",
+        }
+    )
+
     st.subheader("Portfolio report — start/end time + PnL by primary user")
     if combined_missing_count:
         st.warning(f"{combined_missing_count} portfolio(s) had no data under the current filters and are marked accordingly.")
