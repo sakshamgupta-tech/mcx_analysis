@@ -1,4 +1,5 @@
 import io
+import re
 
 import pandas as pd
 import streamlit as st
@@ -429,14 +430,20 @@ else:
             combined_sl_rows = combined_sl_rows[["Portfolio Name", "User ID", "Time", "Time Parsed", "Message"]]
 
             # ---- If a (Portfolio, User) has more than one valid Combined SL line, use
-            # the LATEST one — the trigger closest to their actual exit — for the
-            # timestamp shown alongside "Combined SL" in the report. ----
+            # the LATEST one — the trigger closest to their actual exit. The text shown
+            # in the report is the literal message as written in the Grid Log, up to
+            # " for User:" (e.g. "Combined SL: -2500 hit"), not a synthesized string. ----
+            def extract_sl_text(message):
+                m = re.match(r"(?i)^(.*?)\s+for\s+User:", message)
+                return m.group(1).strip() if m else message.strip()
+
             idx_latest_sl = combined_sl_rows.groupby(["Portfolio Name", "User ID"])["Time Parsed"].idxmax()
             latest_sl = combined_sl_rows.loc[idx_latest_sl]
-            combined_sl_timestamp = {
-                (row["Portfolio Name"], row["User ID"]): row["Time"] for _, row in latest_sl.iterrows()
+            combined_sl_text = {
+                (row["Portfolio Name"], row["User ID"]): extract_sl_text(row["Message"])
+                for _, row in latest_sl.iterrows()
             }
-            combined_sl_pairs = set(combined_sl_timestamp.keys())
+            combined_sl_pairs = set(combined_sl_text.keys())
 
             combined_sl_rows = combined_sl_rows.drop(columns="Time Parsed")
 
@@ -444,7 +451,7 @@ else:
                 def apply_combined_sl(row):
                     key = (row["Portfolio Name"], row[user_col])
                     if key in combined_sl_pairs:
-                        return f"Combined SL ({combined_sl_timestamp[key]})"
+                        return combined_sl_text[key]
                     return row[value_col]
                 return apply_combined_sl
 
@@ -469,15 +476,55 @@ else:
                     mime="text/csv",
                 )
 
-    # ---- Rename to the display column names for the final report / export ----
-    combined = combined.rename(
+    # =====================================================================
+    # 5 lead columns — the Max Portfolio User's OWN metrics for that portfolio
+    # (the user who ran the most portfolios overall, per the ranking above):
+    # their own entry time, their own last-leg exit time/type, and their PnL.
+    # These are separate from the "other information as-is" columns that
+    # follow, which keep the independently-computed End User ID logic.
+    # =====================================================================
+    own_start_time = (
+        work.groupby(["Portfolio Name", "User ID"])["Entry Time Parsed"].min().dt.strftime("%H:%M:%S").to_dict()
+    )
+    own_exit_time = (
+        per_user_exit.set_index(["Portfolio Name", "User ID"])["Exit Time Parsed"].dt.strftime("%H:%M:%S").to_dict()
+    )
+
+    def lookup_own(mapping, row):
+        return mapping.get((row["Portfolio Name"], row["Max Portfolio User ID"]), "-")
+
+    lead_cols = pd.DataFrame(
+        {
+            "Portfolio Name": combined["Portfolio Name"],
+            "PNL": combined["PnL"],
+            "Start Time": combined.apply(lambda r: lookup_own(own_start_time, r), axis=1),
+            "Sqr off type": combined["Exit Type"],
+            "Sqr off time": combined.apply(lambda r: lookup_own(own_exit_time, r), axis=1),
+            "User ID": combined["Max Portfolio User ID"],
+        }
+    )
+
+    # ---- 5 blank spacer columns between the lead block and the rest of the report.
+    # Header labels use increasing amounts of whitespace so they render blank while
+    # still being unique (Streamlit's Arrow renderer rejects duplicate/empty labels). ----
+    blank_cols = pd.DataFrame({" " * (i + 1): [""] * len(combined) for i in range(5)})
+
+    # ---- The rest of the original columns, renamed for display, kept as-is otherwise.
+    # "Start Time" is renamed here to avoid a duplicate column name with the lead
+    # "Start Time" above (Streamlit's Arrow renderer rejects duplicate labels, even
+    # though Excel/CSV tolerate them) — this one is the Start User ID's entry time. ----
+    rest_cols = combined.drop(columns=["Portfolio Name"]).rename(
         columns={
+            "Start Time": "Start Time (Start User ID)",
             "End User ID": "FIRST SQR OFF User ID",
             "End Time": "Sqr off Time",
             "End User Exit Type": "SQR OFF User Exit Type",
             "Max Portfolio User ID": "PNL wise User ID",
         }
     )
+
+    combined = pd.concat([lead_cols, blank_cols, rest_cols], axis=1)
+    combined = combined.drop(columns=["PNL wise User ID", "PnL", "Exit Type"])
 
     st.subheader("Portfolio report — start/end time + PnL by primary user")
     if combined_missing_count:
@@ -492,6 +539,8 @@ else:
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         combined.to_excel(writer, sheet_name="Portfolio Report", index=False)
         rank_df.to_excel(writer, sheet_name="Rank", index=False)
+        # ---- Leave row 2 blank (below the header row) before the data starts. ----
+        writer.book["Portfolio Report"].insert_rows(2)
 
     st.download_button(
         "Download combined report as Excel",
