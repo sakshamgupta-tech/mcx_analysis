@@ -356,9 +356,10 @@ else:
 
     # When a portfolio has a PNL result and its completed leg is marked OnSL or
     # OnTarget, present it as a fully completed portfolio in both exit-type fields.
+    # When PNL is negative, show the original exit type from the Legs sheet as-is.
     def show_all_legs_completed(exit_type, pnl):
         normalized = re.sub(r"[\s_-]+", "", str(exit_type).strip().lower())
-        if pd.notna(pnl) and normalized in {"onsl", "ontarget"}:
+        if pd.notna(pnl) and pnl >= 0 and normalized in {"onsl", "ontarget"}:
             return "ALL LEGS COMPLETED"
         return exit_type
 
