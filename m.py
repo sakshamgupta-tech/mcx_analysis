@@ -359,7 +359,7 @@ else:
     def show_all_legs_completed(exit_type, pnl):
         normalized = re.sub(r"[\s_-]+", "", str(exit_type).strip().lower())
         if pd.notna(pnl) and normalized in {"onsl", "ontarget"}:
-            return "ALL LEGS COMPLETD"
+            return "ALL LEGS COMPLETED"
         return exit_type
 
     combined["Exit Type"] = combined.apply(
