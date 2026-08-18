@@ -405,6 +405,9 @@ else:
             # the phrase only appears at the end. Portfolio Name / User ID come directly
             # from their own CSV columns, not parsed out of the message text. ----
             combined_sl_rows = grid_work[grid_work["Message"].str.strip().str.match(r"(?i)^combined sl")].copy()
+            # If there is no Combined SL row, there is nothing to override.
+            combined_sl_text = {}
+            combined_sl_pairs = set()
 
             # ---- Only a valid trigger if it happened BETWEEN that specific user's own
             # entry into the portfolio and their own exit (their own first leg's Entry
@@ -421,6 +424,14 @@ else:
             combined_sl_rows["User Exit Time"] = combined_sl_rows.apply(
                 lambda r: user_exit_time.get((r["Portfolio Name"], r["User ID"])), axis=1
             )
+            # apply() returns object-typed values; normalize them before comparing
+            # against the datetime64 Time Parsed column. NaT values compare safely.
+            combined_sl_rows["User Entry Time"] = pd.to_datetime(
+                combined_sl_rows["User Entry Time"], errors="coerce"
+            ).dt.floor("s")
+            combined_sl_rows["User Exit Time"] = pd.to_datetime(
+                combined_sl_rows["User Exit Time"], errors="coerce"
+            ).dt.floor("s")
             combined_sl_rows = combined_sl_rows[
                 combined_sl_rows["User Entry Time"].notna()
                 & combined_sl_rows["User Exit Time"].notna()
@@ -437,13 +448,14 @@ else:
                 m = re.match(r"(?i)^(.*?)\s+for\s+User:", message)
                 return m.group(1).strip() if m else message.strip()
 
-            idx_latest_sl = combined_sl_rows.groupby(["Portfolio Name", "User ID"])["Time Parsed"].idxmax()
-            latest_sl = combined_sl_rows.loc[idx_latest_sl]
-            combined_sl_text = {
-                (row["Portfolio Name"], row["User ID"]): extract_sl_text(row["Message"])
-                for _, row in latest_sl.iterrows()
-            }
-            combined_sl_pairs = set(combined_sl_text.keys())
+            if not combined_sl_rows.empty:
+                idx_latest_sl = combined_sl_rows.groupby(["Portfolio Name", "User ID"])["Time Parsed"].idxmax()
+                latest_sl = combined_sl_rows.loc[idx_latest_sl]
+                combined_sl_text = {
+                    (row["Portfolio Name"], row["User ID"]): extract_sl_text(row["Message"])
+                    for _, row in latest_sl.iterrows()
+                }
+                combined_sl_pairs = set(combined_sl_text.keys())
 
             combined_sl_rows = combined_sl_rows.drop(columns="Time Parsed")
 
