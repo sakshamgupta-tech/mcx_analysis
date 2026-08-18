@@ -119,7 +119,11 @@ with st.expander("Advanced: sheet & column mapping (auto-detected — override o
     # Default to both "Completed" and "EntryCompleted" when present — a leg that only
     # got its entry filled (EntryCompleted) still contributes real PNL and should not
     # be silently dropped from the calculation.
-    default_statuses = [s for s in status_values if s.strip().lower() in ("completed", "entrycompleted")]
+    completed_status_keys = {"complete", "completed", "entrycomplete", "entrycompleted"}
+    default_statuses = [
+        s for s in status_values
+        if re.sub(r"[\s_-]+", "", s.strip().lower()) in completed_status_keys
+    ]
     if not default_statuses and status_values:
         default_statuses = [status_values[0]]
     status_filters = st.multiselect("Only include rows with Status in", status_values, default=default_statuses)
@@ -136,8 +140,6 @@ work = work.dropna(subset=["Portfolio Name", "User ID", "Entry Time", "Status"])
 work["Portfolio Name"] = work["Portfolio Name"].astype(str).str.strip()
 work["User ID"] = work["User ID"].astype(str).str.strip()
 
-all_portfolios = sorted(work["Portfolio Name"].unique())
-
 # ---- Filter to the selected Status(es) FIRST ----
 status_filters_lower = [s.strip().lower() for s in status_filters]
 work = work[work["Status"].astype(str).str.strip().str.lower().isin(status_filters_lower)]
@@ -145,6 +147,10 @@ work = work[work["Status"].astype(str).str.strip().str.lower().isin(status_filte
 if work.empty:
     st.error(f"No rows with Status in {status_filters}. Check the column mapping / filter above.")
     st.stop()
+
+# The report universe must come from the filtered rows. Building this list before
+# the Status filter creates orphan portfolios with 0 PNL and '-' start/end values.
+all_portfolios = sorted(work["Portfolio Name"].unique())
 
 work["Entry Time Parsed"] = parse_time_column(work["Entry Time"])
 
@@ -263,8 +269,10 @@ else:
     mlo_work["Portfolio Name"] = mlo_work["Portfolio Name"].astype(str).str.strip()
     mlo_work["User ID"] = mlo_work["User ID"].astype(str).str.strip()
 
-    mlo_all_portfolios = sorted(mlo_work["Portfolio Name"].unique())
     mlo_ran = mlo_work[mlo_work["Status"].astype(str).str.strip().str.lower() == mlo_status_filter.strip().lower()]
+    # Only selected-status MultiLeg portfolios participate in assignment and PNL.
+    # Unfiltered names otherwise become artificial rows with no assigned user.
+    mlo_all_portfolios = sorted(mlo_ran["Portfolio Name"].unique())
 
     coverage = mlo_ran.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
     user_portfolio_counts = {u: len(p) for u, p in coverage.items()}
@@ -281,6 +289,21 @@ else:
                 user_of_portfolio[p] = u
         unassigned -= got
 
+    # Legs-only fallback: a valid Complete/Entry Complete portfolio may not exist
+    # in MultiLeg Orders. Rank users by their eligible Legs portfolio coverage and
+    # assign each missing portfolio to the highest-ranked user who traded it.
+    legs_coverage = work.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
+    legs_user_counts = {u: len(portfolios) for u, portfolios in legs_coverage.items()}
+    legs_ranked_users = sorted(legs_user_counts, key=lambda u: (-legs_user_counts[u], u))
+    missing_from_mlo = set(all_portfolios) - set(user_of_portfolio)
+    for u in legs_ranked_users:
+        got = legs_coverage[u] & missing_from_mlo
+        for p in got:
+            user_of_portfolio[p] = u
+        missing_from_mlo -= got
+        if not missing_from_mlo:
+            break
+
     with st.expander("How portfolios were assigned to a primary user"):
         st.dataframe(pd.DataFrame(assignment_rows), use_container_width=True)
 
@@ -291,7 +314,10 @@ else:
     pnl_lookup = leg_pnl_by_portfolio_user.to_dict()
 
     pnl_rows = []
-    for p in mlo_all_portfolios:
+    # Include every eligible Legs portfolio, plus eligible MultiLeg portfolios.
+    # Legs-only portfolios now receive PNL/start/end values instead of being lost.
+    report_portfolios = sorted(set(all_portfolios) | set(mlo_all_portfolios))
+    for p in report_portfolios:
         u = user_of_portfolio.get(p)
         if u is None:
             pnl_rows.append({"Portfolio Name": p, "Max Portfolio User ID": "-", "PnL": 0})
