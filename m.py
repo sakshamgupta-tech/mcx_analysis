@@ -274,35 +274,39 @@ else:
     # Unfiltered names otherwise become artificial rows with no assigned user.
     mlo_all_portfolios = sorted(mlo_ran["Portfolio Name"].unique())
 
-    coverage = mlo_ran.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
-    user_portfolio_counts = {u: len(p) for u, p in coverage.items()}
+    mlo_coverage = mlo_ran.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
+    legs_coverage = work.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
+
+    # Count Legs portfolios only when that portfolio is absent from MultiLeg Orders.
+    # Those fallback portfolios now participate in the SAME user ranking/count.
+    mlo_portfolio_set = set(mlo_all_portfolios)
+    legs_only_portfolios = set(all_portfolios) - mlo_portfolio_set
+    all_candidate_users = set(mlo_coverage) | set(legs_coverage)
+    coverage = {
+        u: mlo_coverage.get(u, set()) | (legs_coverage.get(u, set()) & legs_only_portfolios)
+        for u in all_candidate_users
+    }
+    coverage = {u: portfolios for u, portfolios in coverage.items() if portfolios}
+    user_portfolio_counts = {u: len(portfolios) for u, portfolios in coverage.items()}
     ranked_users = sorted(user_portfolio_counts, key=lambda u: (-user_portfolio_counts[u], u))
 
-    unassigned = set(mlo_ran["Portfolio Name"].unique())
+    unassigned = mlo_portfolio_set | legs_only_portfolios
     assignment_rows = []
     user_of_portfolio = {}
     for rank, u in enumerate(ranked_users, start=1):
         got = coverage[u] & unassigned
         if got:
-            assignment_rows.append({"Rank": rank, "User ID": u, "Portfolios Assigned": len(got)})
+            assignment_rows.append(
+                {
+                    "Rank": rank,
+                    "User ID": u,
+                    "Portfolio Count": user_portfolio_counts[u],
+                    "Portfolios Assigned": len(got),
+                }
+            )
             for p in got:
                 user_of_portfolio[p] = u
         unassigned -= got
-
-    # Legs-only fallback: a valid Complete/Entry Complete portfolio may not exist
-    # in MultiLeg Orders. Rank users by their eligible Legs portfolio coverage and
-    # assign each missing portfolio to the highest-ranked user who traded it.
-    legs_coverage = work.groupby("User ID")["Portfolio Name"].apply(set).to_dict()
-    legs_user_counts = {u: len(portfolios) for u, portfolios in legs_coverage.items()}
-    legs_ranked_users = sorted(legs_user_counts, key=lambda u: (-legs_user_counts[u], u))
-    missing_from_mlo = set(all_portfolios) - set(user_of_portfolio)
-    for u in legs_ranked_users:
-        got = legs_coverage[u] & missing_from_mlo
-        for p in got:
-            user_of_portfolio[p] = u
-        missing_from_mlo -= got
-        if not missing_from_mlo:
-            break
 
     with st.expander("How portfolios were assigned to a primary user"):
         st.dataframe(pd.DataFrame(assignment_rows), use_container_width=True)
@@ -349,6 +353,21 @@ else:
         return max_user_exit_type.get((row["Portfolio Name"], row["Max Portfolio User ID"]), "-")
 
     combined["Exit Type"] = combined.apply(base_exit_type, axis=1)
+
+    # When a portfolio has a PNL result and its completed leg is marked OnSL or
+    # OnTarget, present it as a fully completed portfolio in both exit-type fields.
+    def show_all_legs_completed(exit_type, pnl):
+        normalized = re.sub(r"[\s_-]+", "", str(exit_type).strip().lower())
+        if pd.notna(pnl) and normalized in {"onsl", "ontarget"}:
+            return "ALL LEGS COMPLETD"
+        return exit_type
+
+    combined["Exit Type"] = combined.apply(
+        lambda r: show_all_legs_completed(r["Exit Type"], r["PnL"]), axis=1
+    )
+    combined["End User Exit Type"] = combined.apply(
+        lambda r: show_all_legs_completed(r["End User Exit Type"], r["PnL"]), axis=1
+    )
 
     combined = combined.sort_values(["_missing", "Portfolio Name"]).drop(columns="_missing").reset_index(drop=True)
     combined = combined[
